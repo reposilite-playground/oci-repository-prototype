@@ -1,1 +1,36 @@
 # oci-repository-prototype
+
+- Endpoints (spec)
+  - [x] end-1
+  - [x] end-2
+  - [x] end-3
+  - [x] end-4a
+  - [x] end-4b
+  - [x] end-5
+  - [x] end-6
+  - [ ] end-7
+  - [ ] end-8a
+  - [ ] end-8b
+  - [ ] end-9
+  - [ ] end-10
+  - [ ] end-11
+  - [ ] end-12a
+  - [ ] end-12b
+  - [x] end-13
+- Endpoints (tested)
+  - [ ] end-1
+  - [ ] end-2
+  - [ ] end-3
+  - [ ] end-4a
+  - [ ] end-4b
+  - [ ] end-5
+  - [ ] end-6
+  - [ ] end-7
+  - [ ] end-8a
+  - [ ] end-8b
+  - [ ] end-9
+  - [ ] end-10
+  - [ ] end-11
+  - [ ] end-12a
+  - [ ] end-12b
+  - [ ] end-13

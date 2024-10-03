@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from flask import Flask, request
 
@@ -17,17 +18,30 @@ def get_blob_by_digest(name, digest):
     file_content = find_blob_file('blobs', f'{name}_{digest}')
     if file_content is None:
         return '', 404
+
+    if request.method == 'HEAD':
+        return '', 200, {
+            'Docker-Content-Digest': digest,
+            'Content-Length': len(file_content)
+        }
+
     return file_content, 200, {'Docker-Content-Digest': digest}
 
 
 # end-3
-@app.route('/v2/<name>/manifests/<reference>', methods=['GET', 'HEAD'])
-def get_manifest_by_reference(name, reference):
-    file_content = find_blob_file('manifests', f'{name}_{reference}')
+@app.route('/v2/<name>/manifests/<location>', methods=['GET', 'HEAD'])
+def get_manifest_by_reference(name, location):
+    file_content = find_blob_file('manifests', f'{name}_{location}')
     if file_content is None:
         return '', 404
 
-    return file_content, 200, {'Docker-Content-Digest': reference}
+    if request.method == 'HEAD':
+        return '', 200, {
+            'Docker-Content-Digest': location,
+            'Content-Length': len(file_content)
+        }
+
+    return file_content, 200, {'Docker-Content-Digest': location}
 
 
 # end-4ab, end-11
@@ -38,8 +52,9 @@ def upload_blob(name):
 
     digest = request.args.get('digest')
     if not digest:
-        # end-4a
-        return '', 202
+        session_id = str(uuid.uuid4())
+        upload_location = f'/v2/{name}/blobs/uploads/{session_id}'
+        return '', 202, {'Location': upload_location}
 
     mount = request.args.get('mount')
     from_chunk = request.args.get('from')
@@ -56,38 +71,69 @@ def upload_blob(name):
 
 
 # end-5
-@app.route('/v2/<name>/blobs/uploads/<reference>', methods=['PATCH'])
-def upload_blob_chunk(name, reference):
+@app.route('/v2/<name>/blobs/uploads/<location>', methods=['PATCH'])
+def upload_blob_chunk(name, location):
     if request.content_length is None or request.content_type != 'application/octet-stream':
         return '', 400
 
     binary_blob = request.data
 
-    save_blob_to_file('blobs', f'{name}_{reference}', binary_blob)
+    save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
 
-    return '', 202, {'Location': f'/v2/{name}/blobs/{reference}'}
+    file_path = os.path.join('blobs', f'{name}_{location}')
+    current_size = get_file_size(file_path)
+
+    content_range = request.headers.get('Content-Range')
+    if content_range:
+        try:
+            range_start, range_end = map(int, content_range.split('-'))
+        except ValueError:
+            return '', 400
+
+        if range_start != current_size:
+            return '', 416
+
+        save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
+
+        new_file_size = get_file_size(file_path)
+        return '', 202, {
+            'Location': f'/v2/{name}/blobs/uploads/{location}',
+            'Range': f'0-{new_file_size - 1}'
+        }
+    else:
+        return '', 400
 
 
 # end-6
+@app.route('/v2/<name>/blobs/uploads/<location>', methods=['PUT'])
 @app.route('/v2/<name>/blobs/uploads/<reference>', methods=['PUT'])
-def upload_blob_chunk_end(name, reference):
-    if request.content_length is None or request.content_type != 'application/octet-stream':
-        return '', 400
-
+def close_blob_upload(name, reference):
     digest = request.args.get('digest')
     if not digest:
         return '', 400
 
+    file_path = os.path.join('blobs', f'{name}_{reference}')
+
+    if not os.path.exists(file_path):
+        return '', 404
+
     binary_blob = request.data
+    if binary_blob:
+        save_blob_to_file('blobs', f'{name}_{reference}', binary_blob, append=True)
 
-    save_blob_to_file('blobs', f'{name}_{digest}', binary_blob)
+    calculated_digest = f"sha256:{uuid.uuid4().hex}"
 
-    return '', 202, {'Location': f'/v2/{name}/blobs/{digest}'}
+    if digest != calculated_digest:
+        return '', 400
+
+    return '', 201, {
+        'Location': f'/v2/{name}/blobs/{digest}'
+    }
 
 
 # end-7
-@app.route("/v2/<name>/manifests/<reference>", methods=['PUT'])
-def put_manifest(name, reference):
+@app.route("/v2/<name>/manifests/<location>", methods=['PUT'])
+def put_manifest(name, location):
     if request.content_type != 'application/vnd.oci.image.manifest.v1+json':
         return '', 400
 
@@ -95,9 +141,14 @@ def put_manifest(name, reference):
     if manifest is None:
         return '', 400
 
-    save_blob_to_file('manifests', f'{name}_{reference}', request.data)
+    save_blob_to_file('manifests', f'{name}_{location}', request.data)
 
-    return '', 201, {'Location': f'/v2/{name}/manifests/{reference}'}
+    digest = f"sha256:{uuid.uuid4().hex}"
+
+    return '', 201, {
+        'Location': f'/v2/{name}/manifests/{location}',
+        'Docker-Content-Digest': digest
+    }
 
 
 # end-8ab
@@ -114,9 +165,9 @@ def get_tags_list(name):
 
 
 # end-9
-@app.route('/v2/<name>/manifests/<reference>', methods=['DELETE'])
-def delete_manifest_by_reference(name, reference):
-    file_path = os.path.join('manifests', f'{name}_{reference}')
+@app.route('/v2/<name>/manifests/<location>', methods=['DELETE'])
+def delete_manifest_by_reference(name, location):
+    file_path = os.path.join('manifests', f'{name}_{location}')
     if os.path.exists(file_path):
         os.remove(file_path)
         return '', 202
@@ -150,16 +201,19 @@ def get_referrers(name, digest):
 def get_blob_upload_status(name, location):
     file_path = os.path.join('blobs', location)
     if os.path.exists(file_path):
-        file_size = os.path.getsize(file_path)
-        return '', 204, {'Location': location, 'Range': f'0-{file_size-1}'}
+        file_size = get_file_size(file_path)
+        return '', 204, {
+            'Location': location,
+            'Range': f'0-{file_size - 1}'
+        }
     return '', 404
 
 
-def save_blob_to_file(directory, filename, data):
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-    with open(os.path.join(directory, filename), 'wb') as file:
-        file.write(data)
+def save_blob_to_file(directory, filename, data, append=False):
+    file_path = os.path.join(directory, filename)
+    mode = 'ab' if append else 'wb'
+    with open(file_path, mode) as f:
+        f.write(data)
 
 
 def find_blob_file(directory, filename):
@@ -170,6 +224,10 @@ def find_blob_file(directory, filename):
     return None
 
 
+def get_file_size(file_path):
+    return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+
 # https://github.com/opencontainers/distribution-spec/blob/main/spec.md
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
