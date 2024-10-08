@@ -1,5 +1,4 @@
 import os
-import pdb
 import uuid
 
 from flask import Flask, request
@@ -106,7 +105,7 @@ def close_blob_upload(name, location):
     if binary_blob:
         save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
 
-    calculated_digest = f"sha256:{uuid.uuid4().hex}"
+    calculated_digest = f"{uuid.uuid4().hex}"
 
     if digest != calculated_digest:
         return '', 400
@@ -195,16 +194,17 @@ def get_blob_upload_status(name, location):
 
 
 def save_blob_to_file(directory, filename, data, append=False):
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-
-    sanitized_filename = filename.replace('/', '_')
-
-    file_path = os.path.join(directory, sanitized_filename)
-    mode = 'ab' if append else 'wb'
-
-    with open(file_path, mode) as f:
-        f.write(data)
+    try:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        sanitized_filename = filename.replace('/', '_')
+        file_path = os.path.join(directory, sanitized_filename)
+        mode = 'ab' if append else 'wb'
+        with open(file_path, mode) as f:
+            f.write(data)
+        print(f"File saved successfully: {file_path}")
+    except Exception as e:
+        print(f"Error saving file: {e}")
 
 
 def find_blob_file(directory, filename):
