@@ -15,7 +15,7 @@ def verify_specification_implementation():
 # end-2
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['GET', 'HEAD'])
 def get_blob_by_digest(name, digest):
-    file_content = find_blob_file('blobs', f'{name}_{digest}')
+    file_content = find_blob_file(f'blobs/{name}', f'{digest}')
     if file_content is None:
         return '', 404
 
@@ -29,19 +29,19 @@ def get_blob_by_digest(name, digest):
 
 
 # end-3
-@app.route('/v2/<path:name>/manifests/<location>/', methods=['GET', 'HEAD'])
-def get_manifest_by_reference(name, location):
-    file_content = find_blob_file('manifests', f'{name}_{location}')
+@app.route('/v2/<path:name>/manifests/<digest>/', methods=['GET', 'HEAD'])
+def get_manifest_by_digest(name, digest):
+    file_content = find_blob_file(f'manifests/{digest}', f'{digest}')
     if file_content is None:
         return '', 404
 
     if request.method == 'HEAD':
         return '', 200, {
-            'Docker-Content-Digest': location,
+            'Docker-Content-Digest': digest,
             'Content-Length': len(file_content)
         }
 
-    return file_content, 200, {'Docker-Content-Digest': location}
+    return file_content, 200, {'Docker-Content-Digest': digest}
 
 
 # end-4ab, end-11
@@ -64,28 +64,28 @@ def upload_blob(name):
 
     # end-4b
     binary_blob = request.data
-    save_blob_to_file('blobs', f'{name}_{digest}', binary_blob)
+    save_blob_to_file(f'blobs/{name}', f'{digest}', binary_blob)
 
     return '', 202, {'Location': f'/v2/{name}/blobs/{digest}/'}
 
 
 # Undocumented Stream Blob Upload - https://github.com/opencontainers/distribution-spec/issues/303
-@app.route('/v2/<path:name>/blobs/uploads/<location>/', methods=['PATCH'])
-def upload_blob_chunk(name, location):
+@app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PATCH'])
+def upload_blob_chunk(name, session_id):
     if request.content_length is None or request.content_type != 'application/octet-stream':
         return '', 400
 
     binary_blob = request.data
 
-    save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
+    save_blob_to_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
 
-    file_path = os.path.join('blobs', f'{name}_{location}')
+    file_path = os.path.join(f'blobs/{name}', f'{session_id}')
 
-    save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
+    save_blob_to_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
 
     get_file_size(file_path)
     return '', 202, {
-        'Location': f'/v2/{name}/blobs/uploads/{location}/'
+        'Location': f'/v2/{name}/blobs/uploads/{session_id}/'
     }
 
 
@@ -96,14 +96,14 @@ def close_blob_upload(name, location):
     if not digest:
         return '', 400
 
-    file_path = os.path.join('blobs', f'{name}_{location}')
+    file_path = os.path.join(f'blobs/{name}', f'{digest}')
 
     if not os.path.exists(file_path):
         return '', 404
 
     binary_blob = request.data
     if binary_blob:
-        save_blob_to_file('blobs', f'{name}_{location}', binary_blob, append=True)
+        save_blob_to_file(f'blobs/{name}', f'{digest}', binary_blob, append=True)
 
     calculated_digest = f"{uuid.uuid4().hex}"
 
@@ -116,8 +116,8 @@ def close_blob_upload(name, location):
 
 
 # end-7
-@app.route("/v2/<path:name>/manifests/<location>/", methods=['PUT'])
-def put_manifest(name, location):
+@app.route("/v2/<path:name>/manifests/<digest>/", methods=['PUT'])
+def put_manifest(name, digest):
     if request.content_type != 'application/vnd.oci.image.manifest.v1+json':
         return '', 400
 
@@ -125,12 +125,12 @@ def put_manifest(name, location):
     if manifest is None:
         return '', 400
 
-    save_blob_to_file('manifests', f'{name}_{location}', request.data)
+    save_blob_to_file(f'manifests/{name}', f'{digest}', request.data)
 
     digest = f"{uuid.uuid4().hex}"
 
     return '', 201, {
-        'Location': f'/v2/{name}/manifests/{location}/',
+        'Location': f'/v2/{name}/manifests/{digest}/',
         'Docker-Content-Digest': digest
     }
 
@@ -149,9 +149,9 @@ def get_tags_list(name):
 
 
 # end-9
-@app.route('/v2/<path:name>/manifests/<location>/', methods=['DELETE'])
-def delete_manifest_by_reference(name, location):
-    file_path = os.path.join('manifests', f'{name}_{location}')
+@app.route('/v2/<path:name>/manifests/<digest>/', methods=['DELETE'])
+def delete_manifest_by_reference(name, digest):
+    file_path = os.path.join(f'manifests/{name}', f'{digest}')
     if os.path.exists(file_path):
         os.remove(file_path)
         return '', 202
@@ -161,7 +161,7 @@ def delete_manifest_by_reference(name, location):
 # end-10
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['DELETE'])
 def delete_blob_by_digest(name, digest):
-    file_path = os.path.join('blobs', f'{name}_{digest}')
+    file_path = os.path.join(f'blobs/{name}', f'{digest}')
     if os.path.exists(file_path):
         os.remove(file_path)
         return '', 202
