@@ -1,9 +1,41 @@
 import os
 import uuid
+from enum import Enum
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+
+
+class Error(Enum):
+    BLOB_UNKNOWN = 'BLOB_UNKNOWN',
+    BLOB_UPLOAD_INVALID = 'BLOB_UPLOAD_INVALID'
+    BLOB_UPLOAD_UNKNOWN = 'BLOB_UPLOAD_UNKNOWN'
+    DIGEST_INVALID = 'DIGEST_INVALID'
+    MANIFEST_BLOB_UNKNOWN = 'MANIFEST_BLOB_UNKNOWN'
+    MANIFEST_INVALID = 'MANIFEST_INVALID'
+    MANIFEST_UNKNOWN = 'MANIFEST_UNKNOWN'
+    NAME_INVALID = 'NAME_INVALID'
+    NAME_UNKNOWN = 'NAME_UNKNOWN'
+    SIZE_INVALID = 'SIZE_INVALID'
+    UNAUTHORIZED = 'UNAUTHORIZED'
+    DENIED = 'DENIED'
+    UNSUPPORTED = 'UNSUPPORTED'
+    TOOMANYREQUESTS = 'TOOMANYREQUESTS'
+
+
+def error_response(error_key, message=None, detail=None):
+    error_status = error_key.value
+    error_body = {
+        "errors": [
+            {
+                "code": error_status,
+                "message": message,
+                "detail": detail
+            }
+        ]
+    }
+    return jsonify(error_body), 400
 
 
 # end-1
@@ -15,9 +47,12 @@ def verify_specification_implementation():
 # end-2
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['GET', 'HEAD'])
 def get_blob_by_digest(name, digest):
-    file_content = find_blob_file(f'blobs/{name}', f'{digest}')
+    file_content = find_file(f'blobs/{name}', f'{digest}')
     if file_content is None:
-        return '', 404
+        return error_response(Error.BLOB_UNKNOWN, message="Could not find blob with specified digest", detail={
+            'name': name,
+            'digest': digest
+        })
 
     if request.method == 'HEAD':
         return '', 200, {
@@ -31,9 +66,12 @@ def get_blob_by_digest(name, digest):
 # end-3
 @app.route('/v2/<path:name>/manifests/<digest>/', methods=['GET', 'HEAD'])
 def get_manifest_by_digest(name, digest):
-    file_content = find_blob_file(f'manifests/{digest}', f'{digest}')
+    file_content = find_file(f'manifests/{digest}', f'{digest}')
     if file_content is None:
-        return '', 404
+        return error_response(Error.MANIFEST_UNKNOWN, message="Could not find manifest with specified digest", detail={
+            'name': name,
+            'digest': digest
+        })
 
     if request.method == 'HEAD':
         return '', 200, {
@@ -54,7 +92,10 @@ def upload_blob(name):
         return '', 202, {'Location': upload_location}
 
     if request.content_length is None or request.content_type != 'application/octet-stream':
-        return '', 400
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail={
+            'name': name,
+            'digest': digest
+        })
 
     mount = request.args.get('mount')
     from_chunk = request.args.get('from')
@@ -64,7 +105,7 @@ def upload_blob(name):
 
     # end-4b
     binary_blob = request.data
-    save_blob_to_file(f'blobs/{name}', f'{digest}', binary_blob)
+    save_file(f'blobs/{name}', f'{digest}', binary_blob)
 
     return '', 202, {'Location': f'/v2/{name}/blobs/{digest}/'}
 
@@ -73,17 +114,15 @@ def upload_blob(name):
 @app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PATCH'])
 def upload_blob_chunk(name, session_id):
     if request.content_length is None or request.content_type != 'application/octet-stream':
-        return '', 400
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail={
+            'name': name,
+            'session_id': session_id
+        })
 
     binary_blob = request.data
 
-    save_blob_to_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
+    save_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
 
-    file_path = os.path.join(f'blobs/{name}', f'{session_id}')
-
-    save_blob_to_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
-
-    get_file_size(file_path)
     return '', 202, {
         'Location': f'/v2/{name}/blobs/uploads/{session_id}/'
     }
@@ -91,24 +130,33 @@ def upload_blob_chunk(name, session_id):
 
 # end-6
 @app.route('/v2/<path:name>/blobs/uploads/<location>/', methods=['PUT'])
-def close_blob_upload(name, location):
+def upload_blob_to_obtained_location(name, location):
+    # check if the request contains the required headers
+    if not request.content_length or request.content_type != 'application/octet-stream':
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail={
+            'name': name,
+            'Location': location
+        })
+
+    # check if the request contains a digest
     digest = request.args.get('digest')
     if not digest:
-        return '', 400
-
-    file_path = os.path.join(f'blobs/{name}', f'{digest}')
-
-    if not os.path.exists(file_path):
-        return '', 404
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not have 'digest' query parameter", detail={
+            'name': name,
+            'Location': location
+        })
 
     binary_blob = request.data
-    if binary_blob:
-        save_blob_to_file(f'blobs/{name}', f'{digest}', binary_blob, append=True)
 
-    calculated_digest = f"{uuid.uuid4().hex}"
+    # check if the request contains a blob
+    if not binary_blob:
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not have any body content", detail={
+            'name': name,
+            'Location': location,
+            'digest': digest
+        })
 
-    if digest != calculated_digest:
-        return '', 400
+    save_file(f'blobs/{name}', f'{digest}', binary_blob, append=True)
 
     return '', 201, {
         'Location': f'/v2/{name}/blobs/{digest}/'
@@ -119,13 +167,19 @@ def close_blob_upload(name, location):
 @app.route("/v2/<path:name>/manifests/<digest>/", methods=['PUT'])
 def put_manifest(name, digest):
     if request.content_type != 'application/vnd.oci.image.manifest.v1+json':
-        return '', 400
+        return error_response(Error.MANIFEST_INVALID, message="Content-Type must be 'application/vnd.oci.image.manifest.v1+json'", detail={
+            'name': name,
+            'digest': digest
+        })
 
     manifest = request.get_json()
     if manifest is None:
-        return '', 400
+        return error_response(Error.MANIFEST_INVALID, message="Request does not contain a valid JSON object", detail={
+            'name': name,
+            'digest': digest
+        })
 
-    save_blob_to_file(f'manifests/{name}', f'{digest}', request.data)
+    save_file(f'manifests/{name}', f'{digest}', request.data)
 
     digest = f"{uuid.uuid4().hex}"
 
@@ -155,7 +209,10 @@ def delete_manifest_by_reference(name, digest):
     if os.path.exists(file_path):
         os.remove(file_path)
         return '', 202
-    return '', 404
+    return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified digest", detail={
+        'name': name,
+        'digest': digest
+    })
 
 
 # end-10
@@ -165,7 +222,10 @@ def delete_blob_by_digest(name, digest):
     if os.path.exists(file_path):
         os.remove(file_path)
         return '', 202
-    return '', 404
+    return error_response(Error.BLOB_UNKNOWN, message="Could not find a blob with specified digest", detail={
+        'name': name,
+        'digest': digest
+    })
 
 
 # end-12ab
@@ -190,10 +250,13 @@ def get_blob_upload_status(name, location):
             'Location': location + '/',
             'Range': f'0-{file_size - 1}'
         }
-    return '', 404
+    return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Could not find uploading blob with specified location", detail={
+        'name': name,
+        'Location': location
+    })
 
 
-def save_blob_to_file(directory, filename, data, append=False):
+def save_file(directory, filename, data, append=False):
     try:
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -207,7 +270,7 @@ def save_blob_to_file(directory, filename, data, append=False):
         print(f"Error saving file: {e}")
 
 
-def find_blob_file(directory, filename):
+def find_file(directory, filename):
     file_path = os.path.join(directory, filename)
     if os.path.exists(file_path):
         with open(file_path, 'rb') as file:

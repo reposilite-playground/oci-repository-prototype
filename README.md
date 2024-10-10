@@ -9,4 +9,5 @@ All objects are stored as files in separate directories, each type has its own d
 - manifests - `/manifests/<namespace>`
 - tags - `/tags/<namespace>`
 
-  ## Sessions
+## Sessions
+
