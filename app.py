@@ -67,14 +67,12 @@ def get_blob_by_digest(name, digest):
 # end-3
 @app.route('/v2/<path:name>/manifests/<digest>/', methods=['GET', 'HEAD'])
 def get_manifest_by_digest(name, digest):
-    file_content = find_file(f'manifests/{digest}', f'{digest}')
+    file_content = find_file(f'manifests/{name}', f'{digest}')
     if file_content is None:
         return error_response(Error.MANIFEST_UNKNOWN, message="Could not find manifest with specified digest", detail=str({
             'name': name,
             'digest': digest
         }))
-
-    breakpoint()
 
     if request.method == 'HEAD':
         return '', 200, {
