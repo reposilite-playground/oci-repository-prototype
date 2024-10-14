@@ -1,8 +1,11 @@
+import hashlib
 import json
 import os
 import pdb
+import shutil
 import uuid
 from enum import Enum
+from hmac import digest
 
 from flask import Flask, request, jsonify
 
@@ -48,7 +51,7 @@ def verify_specification_implementation():
 # end-2
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['GET', 'HEAD'])
 def get_blob_by_digest(name, digest):
-    file_content = find_file(f'blobs/{name}', f'{digest}')
+    file_content = find_file_bytes(f'blobs/{name}', f'{digest}')
     if file_content is None:
         return error_response(Error.BLOB_UNKNOWN, message="Could not find blob with specified digest", detail=str({
             'name': name,
@@ -63,24 +66,41 @@ def get_blob_by_digest(name, digest):
 
     return file_content, 200, {'Docker-Content-Digest': digest}
 
+# end-3 HEAD
+@app.route('/v2/<path:name>/manifests/<reference>/', methods=['HEAD'])
+def get_manifest_checksum(name, reference):
+    if is_valid_digest(reference):
+        # reference is a digest
+        digest_content = find_file_bytes(f'manifests/{name}', f'{reference}.sha256')
+    else:
+        # reference is a tag
+        digest_content = find_file_bytes(f'manifests/{name}/{reference}', 'manifest.sha256')
 
-# end-3
-@app.route('/v2/<path:name>/manifests/<digest>/', methods=['GET', 'HEAD'])
-def get_manifest_by_digest(name, digest):
-    file_content = find_file(f'manifests/{name}', f'{digest}')
-    if file_content is None:
-        return error_response(Error.MANIFEST_UNKNOWN, message="Could not find manifest with specified digest", detail=str({
-            'name': name,
-            'digest': digest
-        }))
+    if digest_content is None:
+        return error_response(Error.MANIFEST_UNKNOWN, message="Checksum for a manifest with that reference is a mismatch", detail=str({'name': name, 'reference': reference}))
 
-    if request.method == 'HEAD':
-        return '', 200, {
-            'Docker-Content-Digest': digest,
-            'Content-Length': len(file_content)
-        }
+    digest = reference if is_valid_digest(reference) else digest_content.decode('utf-8')
 
-    return file_content, 200, {'Docker-Content-Digest': digest}
+    return '', 200, {
+        'Docker-Content-Digest': digest,
+        'Content-Length': len(digest_content)
+    }
+
+
+# end-3 GET
+@app.route('/v2/<path:name>/manifests/<reference>/', methods=['GET'])
+def get_manifest(name, reference):
+    if is_valid_digest(reference):
+        # reference is a digest
+        manifest_content = find_file_bytes(f'manifests/{name}', f'{reference}')
+    else:
+        # reference is a tag
+        manifest_content = find_file_bytes(f'manifests/{name}/{reference}', 'manifest')
+
+    if manifest_content is None:
+        return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified tag", detail=str({'name': name, 'reference': reference}))
+
+    return manifest_content, 200, {'Docker-Content-Digest': digest}
 
 
 # end-4ab, end-11
@@ -165,28 +185,41 @@ def upload_blob_to_obtained_location(name, location):
 
 
 # end-7
-@app.route("/v2/<path:name>/manifests/<digest>/", methods=['PUT'])
-def put_manifest(name, digest):
+@app.route("/v2/<path:name>/manifests/<reference>/", methods=['PUT'])
+def put_manifest(name, reference):
     if request.content_type != 'application/vnd.oci.image.manifest.v1+json':
         return error_response(Error.MANIFEST_INVALID, message="Content-Type must be 'application/vnd.oci.image.manifest.v1+json'", detail=str({
             'name': name,
-            'digest': digest
+            'digest': reference
         }))
 
     manifest = request.get_json()
     if manifest is None:
         return error_response(Error.MANIFEST_INVALID, message="Request does not contain a valid JSON object", detail=str({
             'name': name,
-            'digest': digest
+            'digest': reference
         }))
 
-    save_file(f'manifests/{name}', f'{digest}', request.data)
+    if is_valid_digest(reference):
+        # save manifest
+        save_file(f'manifests/{name}', reference, request.data)
 
-    digest = f"{uuid.uuid4().hex}"
+        content_digest = reference
+    else:
+        tag_digest = calculate_digest_from_bytes(request.data)
+
+        # save manifest
+        save_file(f'manifests/{name}/{reference}', 'manifest', request.data)
+
+        # save manifest digest
+        save_file(f'manifests/{name}/{reference}', f'manifest.sha256', tag_digest.encode('utf-8'))
+
+        content_digest = tag_digest
+
 
     return '', 201, {
-        'Location': f'/v2/{name}/manifests/{digest}/',
-        'Docker-Content-Digest': digest
+        'Location': f'/v2/{name}/manifests/{content_digest}/',
+        'Docker-Content-Digest': content_digest
     }
 
 
@@ -196,23 +229,31 @@ def get_tags_list(name):
     last_tag = request.args.get('last')
     amount = request.args.get('n')
     if not amount or not last_tag:
-        # end-8b
+        # end-8a
+
+
         return '', 200
 
-    # end-8a
+    # end-8b
     return '', 200
 
 
 # end-9
-@app.route('/v2/<path:name>/manifests/<digest>/', methods=['DELETE'])
-def delete_manifest_by_reference(name, digest):
-    file_path = os.path.join(f'manifests/{name}', f'{digest}')
-    if os.path.exists(file_path):
-        os.remove(file_path)
+@app.route('/v2/<path:name>/manifests/<reference>/', methods=['DELETE'])
+def delete_manifest_by_reference(name, reference):
+    manifest_path = f'manifests/{name}/{reference}'
+    if os.path.exists(manifest_path):
+        delete_file(manifest_path)
         return '', 202
-    return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified digest", detail=str({
+
+    tag = find_tag_by_digest(name, reference)
+    if tag:
+        delete_file(f'manifests/{name}/{tag}')
+        return '', 202
+
+    return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({
         'name': name,
-        'digest': digest
+        'reference': reference
     }))
 
 
@@ -238,6 +279,8 @@ def get_referrers(name, digest):
         return '', 200
 
     # end-12a
+
+
     return '', 200
 
 
@@ -271,7 +314,7 @@ def save_file(directory, filename, data, append=False):
         print(f"Error saving file: {e}")
 
 
-def find_file(directory, filename):
+def find_file_bytes(directory, filename):
     file_path = os.path.join(directory, filename)
     if os.path.exists(file_path):
         with open(file_path, 'rb') as file:
@@ -279,8 +322,61 @@ def find_file(directory, filename):
     return None
 
 
+def delete_file(file_path):
+    try:
+        if not os.path.exists(file_path):
+            return
+
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+            print(f"Deleted file: {file_path}")
+        elif os.path.isdir(file_path):
+            shutil.rmtree(file_path)
+            print(f"Deleted directory and its contents: {file_path}")
+        else:
+            print(f"File not found: {file_path}")
+    except Exception as e:
+        print(f"Error deleting file {file_path}: {str(e)}")
+
+
+def find_tag_by_digest(name, digest):
+    tags_dir = f'manifests/{name}'
+
+    for tag in os.listdir(tags_dir):
+        sha256_file = f'{tags_dir}/{tag}/manifest.sha256'
+
+        if os.path.exists(sha256_file):
+            with open(sha256_file, 'r') as f:
+                stored_digest = f.read().strip()
+
+            if stored_digest == digest:
+                return tag
+
+    return None
+
+
 def get_file_size(file_path):
     return os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+
+def calculate_digest_from_file(file_path) -> str:
+    sha256_hash = hashlib.sha256()
+
+    with open(file_path, 'rb') as f:
+        file_content = f.read()
+        sha256_hash.update(file_content)
+
+    return f'sha256:{sha256_hash.hexdigest()}'
+
+
+def calculate_digest_from_bytes(data) -> str:
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(data)
+    return f'sha256:{sha256_hash.hexdigest()}'
+
+
+def is_valid_digest(digest):
+    return digest.startswith('sha256:')
 
 
 # https://github.com/opencontainers/distribution-spec/blob/main/spec.md
