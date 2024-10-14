@@ -71,13 +71,19 @@ def get_blob_by_digest(name, digest):
 def get_manifest_checksum(name, reference):
     if is_valid_digest(reference):
         # reference is a digest
-        digest_content = find_file_bytes(f'manifests/{name}', f'{reference}.sha256')
+        digest_content = find_file_bytes(f'manifests/{name}', reference)
     else:
         # reference is a tag
         digest_content = find_file_bytes(f'manifests/{name}/{reference}', 'manifest.sha256')
 
     if digest_content is None:
-        return error_response(Error.MANIFEST_UNKNOWN, message="Checksum for a manifest with that reference is a mismatch", detail=str({'name': name, 'reference': reference}))
+        tag = find_tag_by_digest(name, reference)
+        if tag is None:
+            return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({'name': name, 'reference': reference}))
+
+        digest_content = find_file_bytes(f'manifests/{name}/{tag}', 'manifest.sha256')
+        if digest_content is None:
+            return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({'name': name, 'reference': reference}))
 
     digest = reference if is_valid_digest(reference) else digest_content.decode('utf-8')
 
@@ -98,9 +104,16 @@ def get_manifest(name, reference):
         manifest_content = find_file_bytes(f'manifests/{name}/{reference}', 'manifest')
 
     if manifest_content is None:
-        return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified tag", detail=str({'name': name, 'reference': reference}))
+        tag = find_tag_by_digest(name, reference)
+        if tag is None:
+            return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({'name': name, 'reference': reference}))
 
-    return manifest_content, 200, {'Docker-Content-Digest': digest}
+        manifest_content = find_file_bytes(f'manifests/{name}/{tag}', 'manifest')
+        if manifest_content is None:
+            return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({'name': name, 'reference': reference}))
+
+
+    return manifest_content, 200, {'Docker-Content-Digest': reference}
 
 
 # end-4ab, end-11
