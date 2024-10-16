@@ -212,14 +212,26 @@ def upload_blob_stream_part(name, session_id):
             }))
 
     # handle blob stream uploading
-    upload_session.uploaded_data += binary_blob
-    upload_session.bytes_received += len(binary_blob)
+    try:
+        # Read the entire binary data from the request
+        binary_blob = request.get_data()
 
-    print(f"Added bytes to session with id({upload_session.session_id}): {upload_session.bytes_received}")
+        # Append the stream to session data
+        upload_session.uploaded_data += binary_blob
+        upload_session.bytes_received += len(binary_blob)
 
-    return '', 202, {
-        'Location': f'/v2/{name}/blobs/uploads/{session_id}/'
-    }
+        print(f"Stream uploaded for session {session_id}: {upload_session.bytes_received} bytes received")
+
+        # Return a successful response with location and range
+        return '', 202, {
+            'Location': f'/v2/{name}/blobs/uploads/{session_id}/',
+            'Range': f'0-{upload_session.bytes_received - 1}'
+        }
+    except OSError as e:
+        return error_response(Error.BLOB_UPLOAD_INVALID, message="Failed to read stream data", detail=str({
+            'error': str(e),
+            'session_id': session_id
+        }))
 
 
 # end-6
@@ -258,8 +270,8 @@ def finalize_blob_upload(name, session_id):
 # end-7
 @app.route("/v2/<path:name>/manifests/<reference>/", methods=['PUT'])
 def put_manifest(name, reference):
-    if request.content_type != 'application/vnd.oci.image.manifest.v1+json':
-        return error_response(Error.MANIFEST_INVALID, message="Content-Type must be 'application/vnd.oci.image.manifest.v1+json'", detail=str({
+    if request.content_type != 'application/vnd.oci.image.manifest.v1+json' and request.content_type != 'application/vnd.docker.distribution.manifest.v2+json':
+        return error_response(Error.MANIFEST_INVALID, message="Content-Type is invalid", detail=str({
             'name': name,
             'digest': reference
         }))
