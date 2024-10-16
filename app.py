@@ -1,9 +1,11 @@
+
 import hashlib
 import json
 import os
 import pdb
 import shutil
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from hmac import digest
 
@@ -11,9 +13,23 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+
+upload_sessions = {}
+
+
+class UploadState:
+    def __init__(self, session_id, name):
+        self.session_id = session_id
+        self.name = name
+        self.uploaded_data = b""
+        self.bytes_received = 0
+        self.created_at = datetime.now(timezone.utc)
+
+
 class Error(Enum):
     BLOB_UNKNOWN = ('BLOB_UNKNOWN', 404)
     BLOB_UPLOAD_INVALID = ('BLOB_UPLOAD_INVALID', 400)
+    BLOB_UPLOAD_CHUNK_OUT_OF_ORDER = ('BLOB_UPLOAD_INVALID', 416)
     BLOB_UPLOAD_UNKNOWN = ('BLOB_UPLOAD_UNKNOWN', 404)
     DIGEST_INVALID = ('DIGEST_INVALID', 400)
     MANIFEST_BLOB_UNKNOWN = ('MANIFEST_BLOB_UNKNOWN', 404)
@@ -118,11 +134,17 @@ def get_manifest(name, reference):
 
 # end-4ab, end-11
 @app.route('/v2/<path:name>/blobs/uploads/', methods=['POST'])
-def upload_blob(name):
+def initiate_blob_upload(name):
     digest = request.args.get('digest')
     if not digest:
         session_id = str(uuid.uuid4())
+
+        # add to active sessions
+        upload_sessions[session_id] = UploadState(session_id, name)
+        print("Upload session created: ", session_id)
+
         upload_location = f'/v2/{name}/blobs/uploads/{session_id}/'
+
         return '', 202, {'Location': upload_location}
 
     if request.content_length is None or request.content_type != 'application/octet-stream':
@@ -144,9 +166,12 @@ def upload_blob(name):
     return '', 202, {'Location': f'/v2/{name}/blobs/{digest}/'}
 
 
-# Undocumented Stream Blob Upload - https://github.com/opencontainers/distribution-spec/issues/303
+# end-5, Undocumented Stream Blob Upload - https://github.com/opencontainers/distribution-spec/issues/303
 @app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PATCH'])
-def upload_blob_chunk(name, session_id):
+def upload_blob_stream_part(name, session_id):
+    if session_id not in upload_sessions:
+        return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
+
     if request.content_length is None or request.content_type != 'application/octet-stream':
         return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail=str({
             'name': name,
@@ -155,7 +180,42 @@ def upload_blob_chunk(name, session_id):
 
     binary_blob = request.data
 
-    save_file(f'blobs/{name}', f'{session_id}', binary_blob, append=True)
+    upload_session = upload_sessions[session_id]
+
+    content_range = request.headers.get('Content-Range')
+    # handle blob chunks uploading (end-5)
+    if content_range:
+        try:
+            start, end = map(int, content_range.split('-'))
+
+            if start != upload_session.bytes_received:
+                return error_response(Error.BLOB_UPLOAD_CHUNK_OUT_OF_ORDER, message="Chunk uploaded out of order", detail=str({
+                    'expected_start': upload_session.bytes_received,
+                    'received_start': start,
+                    'session_id': session_id
+                }))
+
+            # append chunk to the session data
+            upload_session.uploaded_data += binary_blob
+            upload_session.bytes_received += len(binary_blob)
+
+            print(f"Added bytes to chunk with session id {session_id}: {upload_session.bytes_received}")
+
+            return '', 202, {
+                'Location': f'/v2/{name}/blobs/uploads/{session_id}/',
+                'Range': f'0-{upload_session.bytes_received - 1}'
+            }
+        except ValueError:
+            return error_response(Error.BLOB_UPLOAD_INVALID, message="Invalid Content-Range format", detail=str({
+                'content_range': content_range,
+                'session_id': session_id
+            }))
+
+    # handle blob stream uploading
+    upload_session.uploaded_data += binary_blob
+    upload_session.bytes_received += len(binary_blob)
+
+    print(f"Added bytes to session with id({upload_session.session_id}): {upload_session.bytes_received}")
 
     return '', 202, {
         'Location': f'/v2/{name}/blobs/uploads/{session_id}/'
@@ -163,34 +223,32 @@ def upload_blob_chunk(name, session_id):
 
 
 # end-6
-@app.route('/v2/<path:name>/blobs/uploads/<location>/', methods=['PUT'])
-def upload_blob_to_obtained_location(name, location):
-    # check if the request contains the required headers
-    if not request.content_length or request.content_type != 'application/octet-stream':
-        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail=str({
-            'name': name,
-            'Location': location
-        }))
+@app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PUT'])
+def finalize_blob_upload(name, session_id):
+    if session_id not in upload_sessions:
+        return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
 
     # check if the request contains a digest
     digest = request.args.get('digest')
     if not digest:
         return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not have 'digest' query parameter", detail=str({
             'name': name,
-            'Location': location
+            'session_id': session_id
         }))
 
     binary_blob = request.data
 
-    # check if the request contains a blob
-    if not binary_blob:
-        return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not have any body content", detail=str({
-            'name': name,
-            'Location': location,
-            'digest': digest
-        }))
+    upload_session = upload_sessions[session_id]
 
-    save_file(f'blobs/{name}', f'{digest}', binary_blob, append=True)
+    # check if the request contains a blob
+    if binary_blob:
+        upload_session.uploaded_data += binary_blob
+
+    save_file(f'blobs/{name}', f'{digest}', upload_session.uploaded_data)
+
+    print(f"Blob upload session finalized: {session_id}")
+
+    del upload_sessions[session_id]
 
     return '', 201, {
         'Location': f'/v2/{name}/blobs/{digest}/'
@@ -298,19 +356,19 @@ def get_referrers(name, digest):
 
 
 # end-13
-@app.route('/v2/<path:name>/blobs/uploads/<location>/', methods=['GET'])
-def get_blob_upload_status(name, location):
-    file_path = os.path.join('blobs', location)
-    if os.path.exists(file_path):
-        file_size = get_file_size(file_path)
-        return '', 204, {
-            'Location': location + '/',
-            'Range': f'0-{file_size - 1}'
-        }
-    return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Could not find uploading blob with specified location", detail=str({
-        'name': name,
-        'Location': location
-    }))
+@app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['GET'])
+def get_blob_upload_status(name, session_id):
+    if session_id not in upload_sessions:
+        return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
+
+    upload_session = upload_sessions[session_id]
+
+    bytes_received = upload_session.bytes_received
+
+    return '', 204, {
+        'Location': f'/v2/{name}/blobs/uploads/{session_id}/',
+        'Range': f'0-{bytes_received - 1}'
+    }
 
 
 def save_file(directory, filename, data, append=False):
