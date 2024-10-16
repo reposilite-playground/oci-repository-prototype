@@ -128,8 +128,12 @@ def get_manifest(name, reference):
         if manifest_content is None:
             return error_response(Error.MANIFEST_UNKNOWN, message="Could not find a manifest with specified reference", detail=str({'name': name, 'reference': reference}))
 
-
-    return manifest_content, 200, {'Docker-Content-Digest': reference}
+    return manifest_content, 200, {
+        'Content-Type': 'application/vnd.docker.distribution.manifest.v2+json',
+        'Content-Length': len(manifest_content),
+        'Docker-Content-Digest': reference,
+        'Etag': f'"{reference}"'
+    }
 
 
 # end-4ab, end-11
