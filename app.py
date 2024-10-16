@@ -172,7 +172,7 @@ def upload_blob_stream_part(name, session_id):
     if session_id not in upload_sessions:
         return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
 
-    if request.content_length is None or request.content_type != 'application/octet-stream':
+    if request.content_type != 'application/octet-stream':
         return error_response(Error.BLOB_UPLOAD_INVALID, message="Request does not contain Content-Length or Content-Type is not 'application/octet-stream'", detail=str({
             'name': name,
             'session_id': session_id
