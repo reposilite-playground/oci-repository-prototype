@@ -1,5 +1,5 @@
 # oci-repository-prototype
-This is a research prototype developed for Reposilite to evaluate what is needed and how much time it would take to implement OCI (Open Container Initiative) image repository functionality in Reposilite. The prototype supports pushing and pulling Docker images, including chunked uploads and streamed pushes.
+This is a research prototype developed for Reposilite to evaluate what is needed and how much time it would take to implement OCI (Open Container Initiative) image repository functionality in Reposilite. The prototype supports pushing and pulling Docker images, including chunked uploads and streamed pushes. [reference](https://github.com/dzikoysk/reposilite/issues/1618#issuecomment-2380627406)
 ## Conformance Tests
 65 out of 74 tests have passed – pushing and pulling images are functional, making the prototype ready for basic use with minimal functionality.
 ## Storage
