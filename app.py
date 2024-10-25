@@ -1,4 +1,4 @@
-
+import functools
 import hashlib
 import json
 import os
@@ -57,15 +57,37 @@ def error_response(error_key, message='', detail=''):
     }
     return jsonify(error_body), error_status
 
+# example users to test authentication
+users = {
+    "username": "password"
+}
+
+def authenticate():
+    return "Login required", 401, {'WWW-Authenticate': 'Basic realm="Login Required"'}
+
+def check_auth(username, password):
+    return users.get(username) == password
+
+def requires_auth(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
 
 # end-1
 @app.route('/v2/', methods=['GET'])
+@requires_auth
 def verify_specification_implementation():
     return '', 200
 
 
 # end-2
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['GET', 'HEAD'])
+@requires_auth
 def get_blob_by_digest(name, digest):
     file_content = find_file_bytes(f'blobs/{name}', f'{digest}')
     if file_content is None:
@@ -84,6 +106,7 @@ def get_blob_by_digest(name, digest):
 
 # end-3 HEAD
 @app.route('/v2/<path:name>/manifests/<reference>/', methods=['HEAD'])
+@requires_auth
 def get_manifest_checksum(name, reference):
     if is_valid_digest(reference):
         # reference is a digest
@@ -111,6 +134,7 @@ def get_manifest_checksum(name, reference):
 
 # end-3 GET
 @app.route('/v2/<path:name>/manifests/<reference>/', methods=['GET'])
+@requires_auth
 def get_manifest(name, reference):
     if is_valid_digest(reference):
         # reference is a digest
@@ -138,6 +162,7 @@ def get_manifest(name, reference):
 
 # end-4ab, end-11
 @app.route('/v2/<path:name>/blobs/uploads/', methods=['POST'])
+@requires_auth
 def initiate_blob_upload(name):
     digest = request.args.get('digest')
     if not digest:
@@ -172,6 +197,7 @@ def initiate_blob_upload(name):
 
 # end-5, Undocumented Stream Blob Upload - https://github.com/opencontainers/distribution-spec/issues/303
 @app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PATCH'])
+@requires_auth
 def upload_blob_stream_part(name, session_id):
     if session_id not in upload_sessions:
         return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
@@ -240,6 +266,7 @@ def upload_blob_stream_part(name, session_id):
 
 # end-6
 @app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['PUT'])
+@requires_auth
 def finalize_blob_upload(name, session_id):
     if session_id not in upload_sessions:
         return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
@@ -273,6 +300,7 @@ def finalize_blob_upload(name, session_id):
 
 # end-7
 @app.route("/v2/<path:name>/manifests/<reference>/", methods=['PUT'])
+@requires_auth
 def put_manifest(name, reference):
     if request.content_type != 'application/vnd.oci.image.manifest.v1+json' and request.content_type != 'application/vnd.docker.distribution.manifest.v2+json':
         return error_response(Error.MANIFEST_INVALID, message="Content-Type is invalid", detail=str({
@@ -312,6 +340,7 @@ def put_manifest(name, reference):
 
 # end-8ab
 @app.route('/v2/<path:name>/tags/list/', methods=['GET'])
+@requires_auth
 def get_tags_list(name):
     last_tag = request.args.get('last')
     amount = request.args.get('n')
@@ -346,6 +375,7 @@ def delete_manifest_by_reference(name, reference):
 
 # end-10
 @app.route('/v2/<path:name>/blobs/<digest>/', methods=['DELETE'])
+@requires_auth
 def delete_blob_by_digest(name, digest):
     file_path = os.path.join(f'blobs/{name}', f'{digest}')
     if os.path.exists(file_path):
@@ -359,6 +389,7 @@ def delete_blob_by_digest(name, digest):
 
 # end-12ab
 @app.route('/v2/<path:name>/referrers/<digest>/', methods=['GET'])
+@requires_auth
 def get_referrers(name, digest):
     artifact_type = request.args.get('artifactType')
     if artifact_type:
@@ -373,6 +404,7 @@ def get_referrers(name, digest):
 
 # end-13
 @app.route('/v2/<path:name>/blobs/uploads/<session_id>/', methods=['GET'])
+@requires_auth
 def get_blob_upload_status(name, session_id):
     if session_id not in upload_sessions:
         return error_response(Error.BLOB_UPLOAD_UNKNOWN, message="Upload session not found", detail=str({'session_id': session_id}))
